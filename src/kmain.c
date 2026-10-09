@@ -30,7 +30,7 @@
 
 #define UART_BUF_SIZE   (64 * 1024)
 
-#define TASK_QUANTUM_US 10
+#define TASK_QUANTUM_US 10000
 #define TASK_QUANTUM_HZ (1000000 / TASK_QUANTUM_US)
 
 typedef struct uart_api {
@@ -261,17 +261,16 @@ static __attribute__((noreturn)) void dtask_task_exit(void) {
 }
 
 static __attribute__((noreturn)) void dtask_task_entry(void) {
-    dtask_t *task = g_current_task;
-
-    if (!task) dtask_task_exit();
-
     for (;;) {
-        if (task->active) {
-            task->func();
-            task->next_tick = g_tick + task->period;
+        dtask_t *task = g_current_task;
+        if (!task || !task->active) {
+            dtask_task_exit();
         }
 
-        while (!task->active || g_tick < task->next_tick) {
+        task->func();
+        task->next_tick = g_tick + task->period;
+
+        while (task->active && g_tick < task->next_tick) {
             __asm__ volatile ("sti; hlt" : : : "memory");
         }
     }
@@ -281,38 +280,35 @@ static void dtask_prepare_initial(dtask_t *t) {
     u16 cs = interrupts_kernel_cs();
     u16 ss = interrupts_kernel_ss();
     u64 *frame;
-
-    /* Keep the task's return address separate from the IRETQ SS slot. */
-    frame = (u64 *)(t->stack_top - (15 + 2 + 5 + 1) * sizeof(u64));
-
-    frame[0] = 0;   /* r15 */
-    frame[1] = 0;   /* r14 */
-    frame[2] = 0;   /* r13 */
-    frame[3] = 0;   /* r12 */
-    frame[4] = 0;   /* r11 */
-    frame[5] = 0;   /* r10 */
-    frame[6] = 0;   /* r9  */
-    frame[7] = 0;   /* r8  */
-    frame[8] = 0;   /* rdi */
-    frame[9] = 0;   /* rsi */
-    frame[10] = 0;  /* rbp */
-    frame[11] = 0;  /* rdx */
-    frame[12] = 0;  /* rcx */
-    frame[13] = 0;  /* rbx */
-    frame[14] = 0;  /* rax */
-
-    frame[15] = 0;  /* vector */
-    frame[16] = 0;  /* error_code */
+    u64 frame_bytes;
+    frame_bytes = (15 + 2 + 5) * sizeof(u64);
+    frame = (u64 *)((t->stack_top - frame_bytes) & ~0xFULL);
+    frame[0]  = 0;   /* r15 */
+    frame[1]  = 0;   /* r14 */
+    frame[2]  = 0;   /* r13 */
+    frame[3]  = 0;   /* r12 */
+    frame[4]  = 0;   /* r11 */
+    frame[5]  = 0;   /* r10 */
+    frame[6]  = 0;   /* r9  */
+    frame[7]  = 0;   /* r8  */
+    frame[8]  = 0;   /* rdi */
+    frame[9]  = 0;   /* rsi */
+    frame[10] = 0;   /* rbp */
+    frame[11] = 0;   /* rdx */
+    frame[12] = 0;   /* rcx */
+    frame[13] = 0;   /* rbx */
+    frame[14] = 0;   /* rax */
+    frame[15] = 0;                     /* vector */
+    frame[16] = 0;                     /* error_code */
     frame[17] = (u64)dtask_task_entry; /* rip */
-    frame[18] = (u64)cs;      /* cs */
-    frame[19] = 0x202;        /* rflags */
-    frame[20] = t->stack_top - sizeof(u64); /* rsp */
-    frame[21] = (u64)ss;      /* ss */
-    *(u64 *)(t->stack_top - sizeof(u64)) = (u64)dtask_task_exit;
-
-    t->saved.rsp = (u64)&frame[0];
-    t->saved.rip = (u64)dtask_task_entry;
-    t->saved.cs  = cs;
+    frame[18] = (u64)cs;               /* cs  */
+    frame[19] = 0x202;                 /* rflags (IF=1) */
+    frame[20] = ((u64)frame - 16) & ~0xFULL;
+    frame[21] = (u64)ss;               /* ss  */
+    *(u64 *)frame[20] = (u64)dtask_task_exit;
+    t->saved.rsp    = (u64)frame;
+    t->saved.rip    = (u64)dtask_task_entry;
+    t->saved.cs     = cs;
     t->saved.rflags = 0x202;
     for (u32 i = 0; i < DTASK_SIMD_SLOTS * 2; i++) t->saved.simd[i] = 0;
 }
@@ -332,7 +328,7 @@ static int dtask_add_common(const char *name, void (*func)(void),
     t->name = name;
     t->func = func;
     t->period = period ? period : 1;
-    t->next_tick = g_tick + t->period;
+    t->next_tick = g_tick + 1;
     t->active = 1;
     t->uses_simd = uses_simd ? 1 : 0;
     t->stack_base = (u64)g_task_stacks[g_task_count];
@@ -376,11 +372,16 @@ int dkrnl_task_remove(const char *name) {
         if (!g_tasks[i].active) continue;
         int match = 1;
         for (int k = 0; k < 32; k++) {
-            if (g_tasks[i].name[k] != name[k]) { match = 0; break; }
-            if (g_tasks[i].name[k] == 0) break;
+            char a = g_tasks[i].name[k];
+            char b = name[k];
+            if (a != b) { match = 0; break; }
+            if (a == 0) break;
         }
         if (match) {
             g_tasks[i].active = 0;
+            if (&g_tasks[i] == g_current_task) {
+                g_need_resched = 1;
+            }
             return DEPRESSURE_STATUS_OK;
         }
     }
@@ -389,7 +390,7 @@ int dkrnl_task_remove(const char *name) {
 
 void dkrnl_task_yield(void) {
     g_need_resched = 1;
-    __asm__ volatile ("int $0x20");
+    __asm__ volatile ("sti; hlt");
 }
 
 u64 dkrnl_timer_tick(interrupt_frame_t *frame) {
@@ -398,45 +399,46 @@ u64 dkrnl_timer_tick(interrupt_frame_t *frame) {
     if (g_task_count == 0) return (u64)frame;
 
     if (g_current_task) {
-        g_current_task->saved.r15 = frame->r15;
-        g_current_task->saved.r14 = frame->r14;
-        g_current_task->saved.r13 = frame->r13;
-        g_current_task->saved.r12 = frame->r12;
-        g_current_task->saved.r11 = frame->r11;
-        g_current_task->saved.r10 = frame->r10;
-        g_current_task->saved.r9  = frame->r9;
-        g_current_task->saved.r8  = frame->r8;
-        g_current_task->saved.rdi = frame->rdi;
-        g_current_task->saved.rsi = frame->rsi;
-        g_current_task->saved.rbp = frame->rbp;
-        g_current_task->saved.rdx = frame->rdx;
-        g_current_task->saved.rcx = frame->rcx;
-        g_current_task->saved.rbx = frame->rbx;
-        g_current_task->saved.rax = frame->rax;
-        g_current_task->saved.vector = frame->vector;
-        g_current_task->saved.error_code = frame->error_code;
-        g_current_task->saved.rip = frame->rip;
-        g_current_task->saved.cs  = frame->cs;
-        g_current_task->saved.rflags = frame->rflags;
-        g_current_task->saved.rsp = (u64)frame;
+        dtask_t *cur = g_current_task;
+        cur->saved.r15        = frame->r15;
+        cur->saved.r14        = frame->r14;
+        cur->saved.r13        = frame->r13;
+        cur->saved.r12        = frame->r12;
+        cur->saved.r11        = frame->r11;
+        cur->saved.r10        = frame->r10;
+        cur->saved.r9         = frame->r9;
+        cur->saved.r8         = frame->r8;
+        cur->saved.rdi        = frame->rdi;
+        cur->saved.rsi        = frame->rsi;
+        cur->saved.rbp        = frame->rbp;
+        cur->saved.rdx        = frame->rdx;
+        cur->saved.rcx        = frame->rcx;
+        cur->saved.rbx        = frame->rbx;
+        cur->saved.rax        = frame->rax;
+        cur->saved.vector     = frame->vector;
+        cur->saved.error_code = frame->error_code;
+        cur->saved.rip        = frame->rip;
+        cur->saved.cs         = frame->cs;
+        cur->saved.rflags     = frame->rflags;
+        cur->saved.rsp        = (u64)frame;
 
-        if (g_current_task->uses_simd) {
-            dtask_save_xmm(g_current_task->saved.simd);
+        if (cur->uses_simd) {
+            dtask_save_xmm(cur->saved.simd);
         }
     }
 
     u32 start = g_current_index;
-    u32 next = start;
+    u32 next  = start;
     int found = 0;
 
     if (g_need_resched && g_current_task) {
-        for (u32 i = 0; i < g_task_count; i++) {
-            u32 idx = (start + 1 + i) % g_task_count;
+        for (u32 i = 1; i <= g_task_count; i++) {
+            u32 idx = (start + i) % g_task_count;
             if (g_tasks[idx].active) { next = idx; found = 1; break; }
         }
     } else {
-        for (u32 i = 0; i < g_task_count; i++) {
-            u32 idx = (start + 1 + i) % g_task_count;
+        for (u32 i = 1; i <= g_task_count; i++) {
+            u32 idx = (start + i) % g_task_count;
             if (!g_tasks[idx].active) continue;
             if (g_tick >= g_tasks[idx].next_tick) {
                 next = idx;
@@ -475,7 +477,7 @@ u64 dkrnl_timer_tick(interrupt_frame_t *frame) {
     }
 
     g_current_index = next;
-    g_current_task = &g_tasks[next];
+    g_current_task  = &g_tasks[next];
 
     if (g_current_task->uses_simd) {
         dtask_load_xmm(g_current_task->saved.simd);
@@ -490,15 +492,18 @@ void dkrnl_tasker_loop(EFI_BOOT_SERVICES *bs, EFI_EVENT timer_event) {
     (void)timer_event;
 
     u64 last_update = 0;
+    u64 last_poll   = 0;
 
     for (;;) {
         __asm__ volatile ("sti; hlt");
-
         if (g_tick - last_update >= 500) {
             dsmp_update_loads();
             last_update = g_tick;
         }
-        dsmp_poll_workers();
+        if (g_tick - last_poll >= 10) {
+            dsmp_poll_workers();
+            last_poll = g_tick;
+        }
     }
 }
 
