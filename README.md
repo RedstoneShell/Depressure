@@ -1,4 +1,5 @@
 # Depressure - A lightweight OS that runs without `ExitBootServices` and use UEFI as everything
+![IdkHowToNameThatButThisIsALogoOfDepressure](logo.bmp)
 
 Don't spam that kernel is not lightweight (DEPRESSURE.ELF is 2MB+), is scam, real weight of kernel smaller, this is a compiler error.
 
