@@ -8,3 +8,7 @@ Download for Releases zip with OVFM, mingw64 and ELF_Tools, unpack zip in folder
 
 ## How to use?
 Idk how to use that, but you can write your drivers for make from this kernel everything for your tasks. See everything about OS at Wiki. Yet is short readme because i hate to make giant spaghetti-text in README.MD.
+
+## Some screens
+![ResMon](resources.png)
+![Management](Management.png)
