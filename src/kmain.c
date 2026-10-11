@@ -30,7 +30,7 @@
 
 #define UART_BUF_SIZE   (64 * 1024)
 
-#define TASK_QUANTUM_US 10000
+#define TASK_QUANTUM_US 1000
 #define TASK_QUANTUM_HZ (1000000 / TASK_QUANTUM_US)
 
 typedef struct uart_api {
@@ -393,7 +393,25 @@ void dkrnl_task_yield(void) {
     __asm__ volatile ("sti; hlt");
 }
 
+u16 pit_log     = 0;
+u64 last_update = 0;
+u64 last_poll   = 0;
 u64 dkrnl_timer_tick(interrupt_frame_t *frame) {
+    if (pit_log==0) {
+        klog("[kmain] PIT armed, IF=");
+        {
+            u64 rflags;
+            __asm__ volatile ("pushfq; pop %0" : "=r"(rflags));
+            klog_dec((rflags >> 9) & 1);
+            klog("\n");
+        }
+        pit_log=1;
+    }
+    /* Update Cores */
+    if (g_tick - last_update >= 1) {
+        dsmp_update_loads();
+        last_update = g_tick;
+    }
     g_tick++;
 
     if (g_task_count == 0) return (u64)frame;
@@ -484,27 +502,8 @@ u64 dkrnl_timer_tick(interrupt_frame_t *frame) {
     }
 
     g_need_resched = 0;
+
     return g_current_task->saved.rsp;
-}
-
-void dkrnl_tasker_loop(EFI_BOOT_SERVICES *bs, EFI_EVENT timer_event) {
-    (void)bs;
-    (void)timer_event;
-
-    u64 last_update = 0;
-    u64 last_poll   = 0;
-
-    for (;;) {
-        __asm__ volatile ("sti; hlt");
-        if (g_tick - last_update >= 500) {
-            dsmp_update_loads();
-            last_update = g_tick;
-        }
-        if (g_tick - last_poll >= 10) {
-            dsmp_poll_workers();
-            last_poll = g_tick;
-        }
-    }
 }
 
 u64 dsmp_get_total_ram(void) { return g_total_ram; }
@@ -609,6 +608,10 @@ static dkernel_api_t g_kernel_api = {
     .smp_add_metrics      = dsmp_add_metrics,
     .DFindAndGetDriver    = DFindAndGetDriver,
     .hpet_info            = &g_hpet_info,
+    .DCreateHeap          = DCreateHeap,
+    .DWriteHeap           = DWriteHeap,
+    .DReadHeap            = DReadHeap,
+    .DCloseHeap           = DCloseHeap,
 };
 
 void kmain(void) {
@@ -637,6 +640,16 @@ void kmain(void) {
     klog("[kmain] mark 1\n");
 
     dreg_init();
+
+    /* Heap Memory Block init */
+    st = dmemory_init();
+    klog("[kmain] heap init: ");
+    klog_status(st);
+    klog(" size=");
+    klog_dec(DHMB_SIZE / (1024 * 1024));
+    klog(" MB slots=");
+    klog_dec(dmemory_free_slots());
+    klog("\n");
 
     u64 count = uefi_list_dir(driver_dir, entries, MAX_DRIVERS);
     dbg[0] = count;
@@ -998,6 +1011,27 @@ void kmain(void) {
 
     *mark = 0xCCCC000F;
 
+    // LHGC Test: Check if Lightweight Heap Garbage Collector correctly clear Leak heaps.
+    {
+        D_HEAP_POINTER leak = DCreateHeap("kmain_leak");
+        if (leak) {
+            u8 payload[128];
+            for (int i = 0; i < 128; i++) payload[i] = (u8)(i ^ 0x5A);
+
+            dstatus_t ws = DWriteHeap(leak, 0, payload, sizeof(payload));
+            klog("[kmain] leak heap created, write st=");
+            klog_status(ws);
+            klog("\n");
+        } else {
+            klog("[kmain] leak heap FAILED\n");
+        }
+    }
+    dmemory_set_uart((void *)uart);
+    st = dkrnl_task_add("LHGC", lhgc_task, 200);
+    klog("[kmain] LHGC task: ");
+    klog_status(st);
+    klog("\n");
+
     klog("[kmain] ===== TASK DUMP =====\n");
     klog("[kmain] task_count=");
     klog_dec(g_task_count);
@@ -1021,21 +1055,13 @@ void kmain(void) {
         klog_hex64(g_tasks[i].saved.cs);
         klog("\n");
     }
+
+    dmemory_dump(klog);
     klog("[kmain] =====================\n");
 
     klog("[kmain] entering tasker loop\n");
 
     pit_init(TASK_QUANTUM_HZ);
-
-    klog("[kmain] PIT armed, IF=");
-    {
-        u64 rflags;
-        __asm__ volatile ("pushfq; pop %0" : "=r"(rflags));
-        klog_dec((rflags >> 9) & 1);
-        klog("\n");
-    }
-
-    dkrnl_tasker_loop(bs, 0);
 
     *mark = 0xCCCC000D;
     for (;;) __asm__ volatile ("hlt");

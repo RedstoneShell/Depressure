@@ -2,6 +2,7 @@
 #define DKRNL_H
 #include "dtypes.h"
 #include "ddriver.h"
+#include "dmemory.h"
 #include "hpet.h"
 
 #define DTASK_MAX            16
@@ -49,6 +50,12 @@ typedef struct dkernel_api {
     void (*smp_add_metrics)(u32 core_id, u64 active, u64 total);
     ddriver_t *(*DFindAndGetDriver)(const char *name);
     volatile hpet_system_info_t *hpet_info;
+    D_HEAP_POINTER (*DCreateHeap)(const char *source);
+    dstatus_t (*DWriteHeap)(D_HEAP_POINTER h, u64 offset,
+                            const void *data, u64 size);
+    dstatus_t (*DReadHeap)(D_HEAP_POINTER h, u64 offset,
+                           void *out, u64 size);
+    dstatus_t (*DCloseHeap)(D_HEAP_POINTER h);
 } dkernel_api_t;
 
 #define DKRNL_API_VERSION   0x00010001u
