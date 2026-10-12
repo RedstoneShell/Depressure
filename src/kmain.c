@@ -256,7 +256,7 @@ static inline void dtask_load_xmm(const u64 *in) {
     );
 }
 
-static __attribute__((noreturn)) void dtask_task_exit(void) {
+__attribute__((noreturn)) void dtask_task_exit(void) {
     for (;;) __asm__ volatile ("cli; hlt");
 }
 
@@ -393,6 +393,21 @@ void dkrnl_task_yield(void) {
     __asm__ volatile ("sti; hlt");
 }
 
+const char *dkrnl_current_task_name(void) {
+    return g_current_task ? g_current_task->name : 0;
+}
+
+u64 dkrnl_get_tick(void) {
+    return g_tick;
+}
+
+void dkrnl_kill_current_task(void) {
+    if (g_current_task) {
+        g_current_task->active = 0;
+    }
+    g_need_resched = 1;
+}
+
 u16 pit_log     = 0;
 u64 last_update = 0;
 u64 last_poll   = 0;
@@ -406,6 +421,7 @@ u64 dkrnl_timer_tick(interrupt_frame_t *frame) {
             klog("\n");
         }
         pit_log=1;
+        timer_set_source(DTIMER_SOURCE_PIT);
     }
     /* Update Cores */
     if (g_tick - last_update >= 1) {
@@ -590,6 +606,57 @@ ddriver_t *DFindAndGetDriver(const char *name) {
     return 0;
 }
 
+int task_handle_fault(const interrupt_frame_t *frame, task_fault_info_t *out_info) {
+    if (!out_info) return 0;
+
+    dtask_t *t = g_current_task;
+
+    out_info->vector     = frame->vector;
+    out_info->error_code = frame->error_code;
+    out_info->rip        = frame->rip;
+    out_info->cr2        = 0;
+    out_info->task_name  = t ? t->name : "(kernel)";
+
+    if (frame->vector == 14) {
+        u64 cr2;
+        __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
+        out_info->cr2 = cr2;
+    }
+
+    if (!t || !t->active) {
+        return 0;
+    }
+
+    t->active = 0;
+    g_need_resched = 1;
+
+    if (t->saved.rip == frame->rip) {
+        t->saved.rip = (u64)dtask_task_exit;
+    }
+
+    return 1;
+}
+
+void task_log_fault(const task_fault_info_t *info) {
+    if (!info) return;
+
+    klog("\n[FAULT] task=");
+    klog(info->task_name ? info->task_name : "?");
+    klog(" vector=");
+    klog_dec(info->vector);
+    klog(" error=");
+    klog_hex64(info->error_code);
+    klog(" rip=");
+    klog_hex64(info->rip);
+    if (info->vector == 14) {
+        klog(" cr2=");
+        klog_hex64(info->cr2);
+    }
+    klog("\n");
+
+    klog("[FAULT] task terminated, continuing\n");
+}
+
 static dkernel_api_t g_kernel_api = {
     .version              = DKRNL_API_VERSION,
     ._pad                 = 0,
@@ -612,6 +679,13 @@ static dkernel_api_t g_kernel_api = {
     .DWriteHeap           = DWriteHeap,
     .DReadHeap            = DReadHeap,
     .DCloseHeap           = DCloseHeap,
+    .timer_set_source     = timer_set_source,
+    .timer_get_source     = timer_get_source,
+    .timer_set_hz         = timer_set_hz,
+    .timer_get_hz         = timer_get_hz,
+    .timer_source_name           = timer_source_name,
+    .timer_get_ioapic_available  = (u32 (*)(void))ioapic_available,
+    .timer_get_lapic_id          = lapic_get_id,
 };
 
 void kmain(void) {
@@ -640,6 +714,15 @@ void kmain(void) {
     klog("[kmain] mark 1\n");
 
     dreg_init();
+
+    st = timer_init_sources();
+    klog("[kmain] timer sources init: ");
+    klog_status(st);
+    klog(" IOAPIC=");
+    klog_dec(ioapic_available());
+    klog(" LAPIC_ID=");
+    klog_dec(lapic_get_id());
+    klog("\n");
 
     /* Heap Memory Block init */
     st = dmemory_init();

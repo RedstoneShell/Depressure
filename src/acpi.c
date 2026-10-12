@@ -521,10 +521,10 @@ static void add_table(const acpi_header_t *header) {
     entry = &g_tables[g_info.table_count++];
     for (u32 i = 0; i < 4; i++) entry->signature[i] = header->signature[i];
     entry->signature[4] = 0;
-    entry->length = header->length;
+    entry->length   = header->length;
     entry->revision = header->revision;
     entry->checksum = header->checksum;
-    entry->address = (u64)header;
+    entry->address  = (u64)header;
 
     if (bytes_equal(header->signature, "FACP", 4)) {
         g_info.fadt_address = (u64)header;
@@ -541,9 +541,24 @@ static void add_table(const acpi_header_t *header) {
                 u8 entry_length = madt[offset + 1];
                 if (entry_length < 2 ||
                     entry_length > header->length - offset) break;
+
                 if (type == 0 && entry_length >= 8) {
                     g_info.processor_count++;
                 } else if (type == 1 && entry_length >= 12) {
+                    /* IOAPIC entry:
+                     *   offset+0 : type
+                     *   offset+1 : length
+                     *   offset+2 : io_apic_id
+                     *   offset+3 : reserved
+                     *   offset+4 : io_apic_address (u32)
+                     *   offset+8 : global_system_interrupt_base (u32)
+                     */
+                    if (g_info.ioapic_count < ACPI_MAX_IOAPICS) {
+                        g_info.ioapic_address[g_info.ioapic_count] =
+                            (u64)*(const u32 *)(madt + offset + 4);
+                        g_info.ioapic_gsi_base[g_info.ioapic_count] =
+                            *(const u32 *)(madt + offset + 8);
+                    }
                     g_info.ioapic_count++;
                 } else if (type == 9 && entry_length >= 16) {
                     g_info.processor_count++;
@@ -693,6 +708,15 @@ static dstatus_t api_get_table(u32 index, const acpi_table_info_t **out) {
     return DEPRESSURE_STATUS_OK;
 }
 
+static dstatus_t api_get_ioapic(u32 index, u64 *out_addr, u32 *out_gsi_base) {
+    if (!out_addr || !out_gsi_base) return DEPRESSURE_NULL_DATA;
+    if (index >= ACPI_MAX_IOAPICS || index >= g_info.ioapic_count)
+        return DEPRESSURE_OUT_OF_RANGE;
+    *out_addr     = g_info.ioapic_address[index];
+    *out_gsi_base = g_info.ioapic_gsi_base[index];
+    return DEPRESSURE_STATUS_OK;
+}
+
 void acpi_main(void *api, void *fb_info) {
     void *rsdp_pointer = 0;
     acpi_rsdp_t *rsdp;
@@ -712,12 +736,14 @@ void acpi_main(void *api, void *fb_info) {
     acpi_log(" pointer=");
     acpi_log_hex((u64)rsdp_pointer);
     acpi_log("\n");
+
     if (status == 0 && valid_rsdp((acpi_rsdp_t *)rsdp_pointer)) {
         rsdp = (acpi_rsdp_t *)rsdp_pointer;
         g_info.rsdp_address = (u64)rsdp;
         acpi_log("[acpi] RSDP valid revision=");
         acpi_log_hex(rsdp->revision);
         acpi_log("\n");
+
         if (rsdp->revision >= 2 && rsdp->xsdt_address) {
             acpi_log("[acpi] XSDT address=");
             acpi_log_hex(rsdp->xsdt_address);
@@ -754,14 +780,29 @@ void acpi_main(void *api, void *fb_info) {
     acpi_log(" PMBASE=");
     acpi_log_hex(g_info.piix4_pm_base);
     acpi_log("\n");
-    g_acpi_api.version = ACPI_API_VERSION;
-    g_acpi_api._pad = 0;
-    g_acpi_api.get_info = api_get_info;
-    g_acpi_api.get_table_count = api_get_table_count;
-    g_acpi_api.get_table = api_get_table;
-    g_acpi_api.shutdown = acpi_shutdown;
-    g_acpi_api.reboot = acpi_reboot;
-    g_acpi_driver.api = (u64)&g_acpi_api;
+
+    acpi_log("[acpi] IOAPIC count=");
+    acpi_log_hex(g_info.ioapic_count);
+    acpi_log("\n");
+    for (u32 i = 0; i < g_info.ioapic_count && i < ACPI_MAX_IOAPICS; i++) {
+        acpi_log("[acpi]   ioapic[");
+        acpi_log_hex(i);
+        acpi_log("] addr=");
+        acpi_log_hex(g_info.ioapic_address[i]);
+        acpi_log(" gsi_base=");
+        acpi_log_hex(g_info.ioapic_gsi_base[i]);
+        acpi_log("\n");
+    }
+
+    g_acpi_api.version          = ACPI_API_VERSION;
+    g_acpi_api._pad             = 0;
+    g_acpi_api.get_info         = api_get_info;
+    g_acpi_api.get_table_count  = api_get_table_count;
+    g_acpi_api.get_table        = api_get_table;
+    g_acpi_api.get_ioapic       = api_get_ioapic;
+    g_acpi_api.shutdown         = acpi_shutdown;
+    g_acpi_api.reboot           = acpi_reboot;
+    g_acpi_driver.api           = (u64)&g_acpi_api;
 
     if (g_kernel_api && g_kernel_api->register_driver) {
         int result = g_kernel_api->register_driver(&g_acpi_driver);

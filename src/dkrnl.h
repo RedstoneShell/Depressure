@@ -7,7 +7,7 @@
 
 #define DTASK_MAX            16
 #define DTASK_STACK_SIZE     0x8000
-#define DTASK_SIMD_SLOTS     16   /* XMM0..XMM15 */
+#define DTASK_SIMD_SLOTS     16
 
 typedef struct dtask_saved {
     u64 r15, r14, r13, r12, r11, r10, r9, r8;
@@ -56,6 +56,13 @@ typedef struct dkernel_api {
     dstatus_t (*DReadHeap)(D_HEAP_POINTER h, u64 offset,
                            void *out, u64 size);
     dstatus_t (*DCloseHeap)(D_HEAP_POINTER h);
+    dstatus_t (*timer_set_source)(u32 source);
+    u32       (*timer_get_source)(void);
+    dstatus_t (*timer_set_hz)(u32 hz);
+    u32       (*timer_get_hz)(void);
+    const char *(*timer_source_name)(u32 source);
+    u32         (*timer_get_ioapic_available)(void);
+    u32         (*timer_get_lapic_id)(void);
 } dkernel_api_t;
 
 #define DKRNL_API_VERSION   0x00010001u
@@ -66,5 +73,9 @@ int dkrnl_task_add_simd(const char *name, void (*func)(void), u64 period);
 int dkrnl_task_remove(const char *name);
 void dkrnl_task_yield(void);
 void pit_init(u32 hz);
+
+const char *dkrnl_current_task_name(void);
+u64         dkrnl_get_tick(void);
+void        dkrnl_kill_current_task(void);
 
 #endif /* DKRNL_H */

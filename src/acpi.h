@@ -4,8 +4,9 @@
 #include "dtypes.h"
 #include "dstat.h"
 
-#define ACPI_API_VERSION 0x00010001
+#define ACPI_API_VERSION 0x00010002
 #define ACPI_MAX_TABLES  64
+#define ACPI_MAX_IOAPICS 4
 
 typedef struct acpi_table_info {
     char signature[5];
@@ -27,6 +28,8 @@ typedef struct acpi_system_info {
     u32 table_count;
     u32 processor_count;
     u32 ioapic_count;
+    u64 ioapic_address[ACPI_MAX_IOAPICS];
+    u32 ioapic_gsi_base[ACPI_MAX_IOAPICS];
     u32 piix4_found;
     u8  piix4_bus;
     u8  piix4_slot;
@@ -88,6 +91,7 @@ typedef struct acpi_api {
     dstatus_t (*get_info)(acpi_system_info_t *out);
     dstatus_t (*get_table_count)(u32 *out_count);
     dstatus_t (*get_table)(u32 index, const acpi_table_info_t **out);
+    dstatus_t (*get_ioapic)(u32 index, u64 *out_addr, u32 *out_gsi_base);
     dstatus_t (*shutdown)(void);
     dstatus_t (*reboot)(void);
 } acpi_api_t;
