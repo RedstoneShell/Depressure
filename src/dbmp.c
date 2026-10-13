@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 RedstoneShell
+//
+// This file is part of the Depressure Operating System.
+
 #include "dbmp.h"
 #define BMP_SIGNATURE   0x4D42
 int dbmp_check(const void *buf, u64 size) {

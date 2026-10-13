@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 RedstoneShell
+//
+// This file is part of the Depressure Operating System.
+
 #include "dreg.h"
 
 void dreg_init(void) {
