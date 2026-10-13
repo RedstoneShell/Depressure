@@ -6,7 +6,7 @@ Additional Use Grant: None
 Change Date: 11 October 2158 (or the fourth anniversary of the first publicly available distribution of the Licensed Work under this License, whichever comes first)
 Change License: GNU General Public License v2.0 or later
 
-For information about alternative licensing arrangements for the Licensed Work, please contact: elysiumksp@gmail.com
+For information about alternative licensing arrangements for the Licensed Work, please contact: depressuresupport@gmail.com
 
 Notice
 The Business Source License (this document, or the “License”) is not an Open Source license. However, the Licensed Work will eventually be made available under an Open Source License, as stated in this License.
