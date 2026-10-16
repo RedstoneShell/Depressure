@@ -29,4 +29,4 @@ Original text courtesy of the [Speak Up! project](http://web.archive.org/web/201
 
 ## Questions?
 
-If you have questions, please see . If that doesn't answer your questions, feel free to [contact us](mailto:depressuresupport@gmail.com).
+If you have questions, feel free to [contact us](mailto:depressuresupport@gmail.com).
