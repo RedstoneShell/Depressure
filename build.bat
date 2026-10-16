@@ -135,11 +135,14 @@ if %errorlevel% neq 0 goto :err
 x86_64-elf-gcc -c src/acpi.c -o acpi.o %DFLAGS% -fPIC
 if %errorlevel% neq 0 goto :err
 
+x86_64-elf-gcc -c src/dmemory.c -o dmemory.o %DFLAGS% -fPIC
+if %errorlevel% neq 0 goto :err
+
 echo [4/5] LINKING...
 
 x86_64-elf-ld -m elf_x86_64 -T linker.ld -o DEPRESSURE.ELF ^
     KENTRY.o interrupts.o kmain.o interrupts_c.o dreg.o duefi.o delf.o dbmp.o dboot.o dsmp.o dsmp_1.o dstorage.o dhpet.o ^
-    dap_c.o dap_worker.o dap_worker_c.o
+    dap_c.o dap_worker.o dap_worker_c.o dmemory.o
 if %errorlevel% neq 0 goto :err
 
 x86_64-elf-ld -pie -z max-page-size=0x1000 -m elf_x86_64 -T dws.ld -o dws.elf dws_entry.o dws.o
@@ -159,7 +162,7 @@ x86_64-elf-ld -pie -z max-page-size=0x1000 -m elf_x86_64 -T dkbd.ld -o dkbd.elf 
 if %errorlevel% neq 0 goto :err
 
 x86_64-elf-ld -pie -z max-page-size=0x1000 -m elf_x86_64 -T DepMgr.ld -o DepMgr.elf ^
-    DepMgr_entry.o DepMgr.o
+    DepMgr_entry.o DepMgr.o dbmp.o dpng.o acpi.o duefi.o
 if %errorlevel% neq 0 goto :err
 
 x86_64-elf-ld -pie -z max-page-size=0x1000 -m elf_x86_64 -T dmouse.ld -o dmouse.elf ^
@@ -207,6 +210,7 @@ copy /Y acpi.elf image\Depressure\BOOT\acpi.elf > nul
 
 echo.
 qemu-system-x86_64 -bios OVMF.fd ^
+ -machine q35 ^
  -smp 6 ^
  -drive file=fat:rw:image,format=raw ^
  -serial stdio ^
