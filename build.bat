@@ -138,6 +138,9 @@ if %errorlevel% neq 0 goto :err
 x86_64-elf-gcc -c src/dmemory.c -o dmemory.o %DFLAGS% -fPIC
 if %errorlevel% neq 0 goto :err
 
+x86_64-elf-gcc -c src/dpng.c -o dpng.o %DFLAGS% -fPIC
+if %errorlevel% neq 0 goto :err
+
 echo [4/5] LINKING...
 
 x86_64-elf-ld -m elf_x86_64 -T linker.ld -o DEPRESSURE.ELF ^
