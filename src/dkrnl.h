@@ -1,15 +1,9 @@
-// SPDX-License-Identifier: LicenseRef-Depressure-BSL-1.1
-// Copyright (c) 2026 RedstoneShell
-//
-// Change Date: October 11, 2158
-// Change License: GPL-3.0-or-later
-// Additional Use Grant: Compilation of third-party software using these headers is permitted without restrictions.
-
 #ifndef DKRNL_H
 #define DKRNL_H
 #include "dtypes.h"
 #include "ddriver.h"
 #include "dmemory.h"
+#include "interrupts.h"
 #include "hpet.h"
 
 #define DTASK_MAX            16
@@ -70,9 +64,10 @@ typedef struct dkernel_api {
     const char *(*timer_source_name)(u32 source);
     u32         (*timer_get_ioapic_available)(void);
     u32         (*timer_get_lapic_id)(void);
+    void (*fault_show)(const task_fault_info_t *info);
 } dkernel_api_t;
 
-#define DKRNL_API_VERSION   0x00010001u
+#define DKRNL_API_VERSION   0x00010002u
 
 ddriver_t *DFindAndGetDriver(const char *name);
 int dkrnl_task_add(const char *name, void (*func)(void), u64 period);
@@ -84,5 +79,8 @@ void pit_init(u32 hz);
 const char *dkrnl_current_task_name(void);
 u64         dkrnl_get_tick(void);
 void        dkrnl_kill_current_task(void);
+
+void fault_gui_show(const task_fault_info_t *info);
+dkernel_api_t *dkrnl_get_api(void);
 
 #endif /* DKRNL_H */

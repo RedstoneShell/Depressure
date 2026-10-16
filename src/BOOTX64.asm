@@ -9,9 +9,6 @@ DEFAULT REL
 section .text
 global efi_main
 
-; =====================================================
-; print_hex
-; =====================================================
 print_hex:
     push rbp
     mov  rbp, rsp
@@ -20,10 +17,9 @@ print_hex:
     push r13
     push r14
     push r15
-    sub  rsp, 0x30
+    sub  rsp, 0x38
 
     mov  r12, rax
-    mov  r13, rbx
 
     lea  r14, [rel hex_buf]
     mov  word [r14], 0x0030
@@ -52,7 +48,7 @@ print_hex:
     mov  word [r14+2], 0x000A
     mov  word [r14+4], 0x0000
 
-    mov  rcx, [r13 + 0x40]
+    mov  rcx, [rel g_con_out]
     test rcx, rcx
     jz   .hex_done
     lea  rdx, [rel hex_buf]
@@ -60,7 +56,7 @@ print_hex:
     call rax
 
 .hex_done:
-    add  rsp, 0x30
+    add  rsp, 0x38
     pop  r15
     pop  r14
     pop  r13
@@ -69,9 +65,6 @@ print_hex:
     pop  rbp
     ret
 
-; =====================================================
-; print_mode_dump: виводить 8 quad-word за gop_mode_ptr
-; =====================================================
 print_mode_dump:
     push rbp
     mov  rbp, rsp
@@ -80,22 +73,21 @@ print_mode_dump:
     push r13
     push r14
     push r15
-    sub  rsp, 0x30
+    sub  rsp, 0x38
 
-    mov  r13, rbx             ; r13 = SystemTable
-    mov  r14, [rel gop_mode_ptr]  ; r14 = Mode
+    mov  r14, [rel gop_mode_ptr]
     test r14, r14
     jz   .done
 
-    xor  r12, r12             ; r12 = index
+    xor  r12, r12
 .dump_loop:
-    ; Print label "  [N]: "
-    mov  rcx, [r13 + 0x40]
+    mov  rcx, [rel g_con_out]
+    test rcx, rcx
+    jz   .done
     lea  rdx, [rel log_dump_label]
     mov  rax, [rcx + 8]
     call rax
 
-    ; Print value
     mov  rax, [r14 + r12*8]
     call print_hex
 
@@ -104,7 +96,7 @@ print_mode_dump:
     jl   .dump_loop
 
 .done:
-    add  rsp, 0x30
+    add  rsp, 0x38
     pop  r15
     pop  r14
     pop  r13
@@ -113,9 +105,6 @@ print_mode_dump:
     pop  rbp
     ret
 
-; =====================================================
-; efi_main
-; =====================================================
 efi_main:
     push rbp
     mov  rbp, rsp
@@ -126,49 +115,59 @@ efi_main:
     push r15
     sub  rsp, 0x48
 
-    mov  rbx, rdx            ; rbx = SystemTable
-    mov  r12, rcx            ; r12 = ImageHandle
+    mov  r12, rcx
+    mov  [rel g_st], rdx
+    mov  rbx, rdx
 
-    mov  rcx, [rbx + 0x40]
-    test rcx, rcx
+    mov  rax, [rbx + 0x40]
+    mov  [rel g_con_out], rax
+    test rax, rax
     jz   .done
 
+    mov  rax, [rbx + 0x60]
+    mov  [rel g_bs], rax
+
+    mov  rcx, [rel g_con_out]
     lea  rdx, [rel log_entry]
     mov  rax, [rcx + 8]
     call rax
+
+    mov  rcx, [rel g_con_out]
+    test rcx, rcx
+    jz   .done
 
     lea  rdx, [rel hello_msg]
     mov  rax, [rcx + 8]
     call rax
 
-    mov  r13, [rbx + 0x60]
+    mov  r13, [rel g_bs]
     test r13, r13
     jz   .no_bs
 
-    mov  rcx, [rbx + 0x40]
+    mov  rcx, [rel g_con_out]
     lea  rdx, [rel log_bs_ptr]
     mov  rax, [rcx + 8]
     call rax
     mov  rax, r13
     call print_hex
 
-    mov  rcx, [rbx + 0x40]
+    mov  rcx, [rel g_con_out]
     lea  rdx, [rel log_bs_sig]
     mov  rax, [rcx + 8]
     call rax
     mov  rax, [r13]
     call print_hex
 
-    ; Write UEFI context to 0x200100
     mov  rdi, 0x200100
-    mov  [rdi + 0x00], rbx
-    mov  [rdi + 0x08], r13
-    mov  rax, [rbx + 0x40]
+    mov  rax, [rel g_st]
+    mov  [rdi + 0x00], rax
+    mov  rax, [rel g_bs]
+    mov  [rdi + 0x08], rax
+    mov  rax, [rel g_con_out]
     mov  [rdi + 0x10], rax
     mov  [rdi + 0x18], r12
 
-    ; GOP
-    mov  rcx, [rbx + 0x40]
+    mov  rcx, [rel g_con_out]
     lea  rdx, [rel log_gop_call]
     mov  rax, [rcx + 8]
     call rax
@@ -180,7 +179,7 @@ efi_main:
     call rax
 
     mov  r14, rax
-    mov  rcx, [rbx + 0x40]
+    mov  rcx, [rel g_con_out]
     lea  rdx, [rel log_gop_status]
     mov  rax, [rcx + 8]
     call rax
@@ -189,38 +188,31 @@ efi_main:
     test r14, r14
     jnz  .fail_gop
 
-    mov  rcx, [rbx + 0x40]
+    mov  rcx, [rel g_con_out]
     lea  rdx, [rel log_gop_ptr]
     mov  rax, [rcx + 8]
     call rax
     mov  rax, [rel gop_ptr]
     call print_hex
 
-    ; gop->Mode @ 0x18
     mov  rcx, [rel gop_ptr]
     mov  rcx, [rcx + 0x18]
     mov  [rel gop_mode_ptr], rcx
 
-    mov  rcx, [rbx + 0x40]
+    mov  rcx, [rel g_con_out]
     lea  rdx, [rel log_mode_ptr]
     mov  rax, [rcx + 8]
     call rax
     mov  rax, [rel gop_mode_ptr]
     call print_hex
 
-    ; =================================================
-    ; DUMP Mode structure (8 quad-words)
-    ; =================================================
-    mov  rcx, [rbx + 0x40]
+    mov  rcx, [rel g_con_out]
     lea  rdx, [rel log_mode_dump]
     mov  rax, [rcx + 8]
     call rax
 
     call print_mode_dump
 
-    ; =================================================
-    ; Read Mode fields
-    ; =================================================
     mov  rcx, [rel gop_mode_ptr]
 
     mov  eax, dword [rcx + 0x00]
@@ -241,7 +233,6 @@ efi_main:
     mov  rax, [rcx + 0x20]
     mov  [rel fb_size], rax
 
-    ; Info
     mov  rcx, [rel gop_info_ptr]
     test rcx, rcx
     jz   .skip_info
@@ -257,29 +248,28 @@ efi_main:
     mov  eax, dword [rcx + 0x20]
     mov  [rel fb_pitch], rax
 
-    ; Print info
-    mov  rcx, [rbx + 0x40]
+    mov  rcx, [rel g_con_out]
     lea  rdx, [rel log_fb_w]
     mov  rax, [rcx + 8]
     call rax
     mov  rax, [rel fb_width]
     call print_hex
 
-    mov  rcx, [rbx + 0x40]
+    mov  rcx, [rel g_con_out]
     lea  rdx, [rel log_fb_h]
     mov  rax, [rcx + 8]
     call rax
     mov  rax, [rel fb_height]
     call print_hex
 
-    mov  rcx, [rbx + 0x40]
+    mov  rcx, [rel g_con_out]
     lea  rdx, [rel log_fb_fmt]
     mov  rax, [rcx + 8]
     call rax
     mov  rax, [rel fb_format]
     call print_hex
 
-    mov  rcx, [rbx + 0x40]
+    mov  rcx, [rel g_con_out]
     lea  rdx, [rel log_fb_base]
     mov  rax, [rcx + 8]
     call rax
@@ -288,7 +278,6 @@ efi_main:
 
 .skip_info:
 
-    ; Write framebuffer info to 0x200000
     mov  rdi, 0x200000
 
     mov  rax, [rel fb_base]
@@ -304,8 +293,7 @@ efi_main:
     mov  rax, [rel fb_size]
     mov  [rdi + 0x28], rax
 
-    ; Load kernel ELF
-    mov  rcx, [rbx + 0x40]
+    mov  rcx, [rel g_con_out]
     lea  rdx, [rel log_calling_lp]
     mov  rax, [rcx + 8]
     call rax
@@ -313,12 +301,24 @@ efi_main:
     lea  rcx, [rel SimpleFsGuid]
     xor  rdx, rdx
     lea  r8,  [rel file_system]
+    mov  r13, [rel g_bs]
     mov  rax, [r13 + 0x140]
     call rax
 
     mov  r14, rax
+    mov  rcx, [rel g_con_out]
+    lea  rdx, [rel log_lp_status]
+    mov  rax, [rcx + 8]
+    call rax
+    mov  rax, r14
+    call print_hex
     test r14, r14
     jnz  .fail_lp
+
+    mov  rcx, [rel g_con_out]
+    lea  rdx, [rel log_ov_call]
+    mov  rax, [rcx + 8]
+    call rax
 
     mov  rcx, [rel file_system]
     lea  rdx, [rel root_dir]
@@ -326,8 +326,19 @@ efi_main:
     call rax
 
     mov  r14, rax
+    mov  rcx, [rel g_con_out]
+    lea  rdx, [rel log_ov_status]
+    mov  rax, [rcx + 8]
+    call rax
+    mov  rax, r14
+    call print_hex
     test r14, r14
     jnz  .fail_ov
+
+    mov  rcx, [rel g_con_out]
+    lea  rdx, [rel log_open_call]
+    mov  rax, [rcx + 8]
+    call rax
 
     mov  rcx, [rel root_dir]
     lea  rdx, [rel file_handle]
@@ -338,10 +349,21 @@ efi_main:
     call rax
 
     mov  r14, rax
+    mov  rcx, [rel g_con_out]
+    lea  rdx, [rel log_open_status]
+    mov  rax, [rcx + 8]
+    call rax
+    mov  rax, r14
+    call print_hex
     test r14, r14
     jnz  .fail_open
 
-    mov  qword [rel info_size], 1024
+    mov  rcx, [rel g_con_out]
+    lea  rdx, [rel log_getinfo_call]
+    mov  rax, [rcx + 8]
+    call rax
+
+    mov  qword [rel info_size], 4096
     mov  rcx, [rel file_handle]
     lea  rdx, [rel FileInfoGuid]
     lea  r8,  [rel info_size]
@@ -350,11 +372,29 @@ efi_main:
     call rax
 
     mov  r14, rax
+    mov  rcx, [rel g_con_out]
+    lea  rdx, [rel log_getinfo_status]
+    mov  rax, [rcx + 8]
+    call rax
+    mov  rax, r14
+    call print_hex
     test r14, r14
     jnz  .fail_getinfo
 
     mov  rax, [rel info_buf + 0x08]
     mov  [rel read_size], rax
+
+    mov  rcx, [rel g_con_out]
+    lea  rdx, [rel log_read_size]
+    mov  rax, [rcx + 8]
+    call rax
+    mov  rax, [rel read_size]
+    call print_hex
+
+    mov  rcx, [rel g_con_out]
+    lea  rdx, [rel log_read_call]
+    mov  rax, [rcx + 8]
+    call rax
 
     mov  rcx, [rel file_handle]
     lea  rdx, [rel read_size]
@@ -363,10 +403,22 @@ efi_main:
     call rax
 
     mov  r14, rax
+    mov  rcx, [rel g_con_out]
+    lea  rdx, [rel log_read_status]
+    mov  rax, [rcx + 8]
+    call rax
+    mov  rax, r14
+    call print_hex
     test r14, r14
     jnz  .fail_read
 
-    ; Parse PHDRs
+    mov  rcx, [rel g_con_out]
+    lea  rdx, [rel log_elf_magic]
+    mov  rax, [rcx + 8]
+    call rax
+    mov  eax, dword [rel elf_buffer]
+    call print_hex
+
     mov  r14, [rel elf_buffer + 0x20]
     lea  rax, [rel elf_buffer]
     add  r14, rax
@@ -429,23 +481,12 @@ efi_main:
     jnz  .segment_loop
 
 .no_segments:
-    mov  rcx, [rbx + 0x40]
+    mov  rcx, [rel g_con_out]
     lea  rdx, [rel log_all_done]
     mov  rax, [rcx + 8]
     call rax
 
-    ; Stall 2 seconds
-    mov  rcx, [rbx + 0x40]
-    lea  rdx, [rel log_stall]
-    mov  rax, [rcx + 8]
-    call rax
-
-    mov  rcx, 2000000
-    mov  rax, [r13 + 0xF8]
-    call rax
-
-    ; jmp to kernel
-    mov  rcx, [rbx + 0x40]
+    mov  rcx, [rel g_con_out]
     lea  rdx, [rel log_jumping]
     mov  rax, [rcx + 8]
     call rax
@@ -453,31 +494,57 @@ efi_main:
     mov  rax, [rel elf_buffer + 0x18]
     jmp  rax
 
-    jmp  .done
-
 .fail_gop:
-    mov  rcx, [rbx + 0x40]
+    mov  rcx, [rel g_con_out]
     lea  rdx, [rel log_fail_gop]
     mov  rax, [rcx + 8]
     call rax
     jmp  .done
 
 .no_bs:
-    mov  rcx, [rbx + 0x40]
+    mov  rcx, [rel g_con_out]
     lea  rdx, [rel log_no_bs]
     mov  rax, [rcx + 8]
     call rax
     jmp  .done
 
 .fail_lp:
+    mov  rcx, [rel g_con_out]
+    lea  rdx, [rel log_fail_lp]
+    mov  rax, [rcx + 8]
+    call rax
+    jmp  .done
+
 .fail_ov:
+    mov  rcx, [rel g_con_out]
+    lea  rdx, [rel log_fail_ov]
+    mov  rax, [rcx + 8]
+    call rax
+    jmp  .done
+
 .fail_open:
+    mov  rcx, [rel g_con_out]
+    lea  rdx, [rel log_fail_open]
+    mov  rax, [rcx + 8]
+    call rax
+    jmp  .done
+
 .fail_getinfo:
+    mov  rcx, [rel g_con_out]
+    lea  rdx, [rel log_fail_getinfo]
+    mov  rax, [rcx + 8]
+    call rax
+    jmp  .done
+
 .fail_read:
+    mov  rcx, [rel g_con_out]
+    lea  rdx, [rel log_fail_read]
+    mov  rax, [rcx + 8]
+    call rax
     jmp  .done
 
 .done:
-    mov  rcx, [rbx + 0x60]
+    mov  rcx, [rel g_bs]
     test rcx, rcx
     jz   .exit
     mov  rax, [rcx + 0xF8]
@@ -497,7 +564,9 @@ efi_main:
 
 section .data
 align 8
-
+g_st:            dq 0
+g_bs:            dq 0
+g_con_out:       dq 0
 file_system:     dq 0
 root_dir:        dq 0
 file_handle:     dq 0
@@ -586,9 +655,18 @@ log_fail_ov:        dw '[','!',']',' ','F','A','I','L',' ','O','V',13,10,0
 log_fail_open:      dw '[','!',']',' ','F','A','I','L',' ','O','p','e','n',13,10,0
 log_fail_getinfo:   dw '[','!',']',' ','F','A','I','L',' ','G','e','t','I','n','f','o',13,10,0
 log_fail_read:      dw '[','!',']',' ','F','A','I','L',' ','R','e','a','d',13,10,0
+log_lp_status:      dw '[',']',' ','L','P',' ','s','t',':',' ',0
+log_ov_status:      dw '[',']',' ','O','V',' ','s','t',':',' ',0
+log_open_status:    dw '[',']',' ','O','p','e','n',' ','s','t',':',' ',0
+log_getinfo_call:   dw '[',']',' ','G','e','t','I','n','f','o',13,10,0
+log_getinfo_status: dw '[',']',' ','G','I',' ','s','t',':',' ',0
+log_read_size:      dw '[',']',' ','S','i','z','e',':',' ',0
+log_read_call:      dw '[',']',' ','R','e','a','d',13,10,0
+log_read_status:    dw '[',']',' ','R','d',' ','s','t',':',' ',0
+log_elf_magic:      dw '[',']',' ','E','L','F',' ','m','a','g','i','c',':',' ',0
 
 section .bss
 align 16
-info_buf:    resb 1024
+info_buf:    resb 4096
 elf_buffer:  resb 0x400000
 mmap_buf:    resb 0x20000

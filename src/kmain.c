@@ -17,6 +17,7 @@
 #include "dap.h"
 #include "dbmp.h"
 #include "dkrnl.h"
+#include "dfont8x8.h"
 #include "dstat.h"
 #include "interrupts.h"
 #include "acpi.h"
@@ -37,6 +38,9 @@
 
 #define TASK_QUANTUM_US 1000
 #define TASK_QUANTUM_HZ (1000000 / TASK_QUANTUM_US)
+
+// Test modes, use for debug
+#define D_UART_TEST 0 // 1 == UART log with duplication at screen, 0 = Only UART log
 
 typedef struct uart_api {
     u32 version;
@@ -84,6 +88,7 @@ static char   g_uart_buf[UART_BUF_SIZE];
 static u64    g_uart_buf_len  = 0;
 static int    g_uart_ready    = 0;
 static uart_api_t *g_uart     = 0;
+static dws_api_t  *g_dws      = 0;
 
 static u8 driver_buf[0x100000];
 static ddir_entry_t entries[MAX_DRIVERS];
@@ -98,6 +103,64 @@ static const u16 path_prefix[17] = {
 };
 
 static u64 g_total_ram = 0;
+
+typedef struct efi_simple_text_output_protocol {
+    void *reset;
+    u64 (*output_string)(void *this, const u16 *string);
+    void *test_string;
+    void *query_mode;
+    void *set_mode;
+    void *set_attribute;
+    void *clear_screen;
+    void *set_cursor_position;
+    void *enable_cursor;
+    void *mode;
+} efi_simple_text_output_protocol_t;
+
+static efi_simple_text_output_protocol_t *g_efi_con_out = 0;
+
+static void efi_init_con_out(void) {
+    if (g_efi_con_out) return;
+    g_efi_con_out = *(efi_simple_text_output_protocol_t **)0x200110;
+}
+
+static void efi_puts(const char *s) {
+    if (!D_UART_TEST) return;
+    efi_init_con_out();
+    if (!g_efi_con_out || !g_efi_con_out->output_string) return;
+
+    u16 buf[256];
+    u32 i = 0;
+
+    while (*s) {
+        char c = *s++;
+        if (c == '\n') {
+            buf[i++] = '\r';
+            if (i >= 254) {
+                buf[i] = 0;
+                uefi_con_out_string(g_efi_con_out, buf);
+                i = 0;
+            }
+            buf[i++] = '\n';
+        } else {
+            buf[i++] = (u16)c;
+        }
+        if (i >= 254) {
+            buf[i] = 0;
+            uefi_con_out_string(g_efi_con_out, buf);
+            i = 0;
+        }
+    }
+    if (i) {
+        buf[i] = 0;
+        uefi_con_out_string(g_efi_con_out, buf);
+    }
+}
+
+static void efi_putc(char c) {
+    char buf[2] = { c, 0 };
+    efi_puts(buf);
+}
 
 static inline void port_outb(u16 port, u8 v) {
     __asm__ volatile ("outb %0, %1" : : "a"(v), "Nd"(port));
@@ -132,6 +195,8 @@ static void uart_flush(void) {
 }
 
 static void klog(const char *s) {
+    if (D_UART_TEST) { efi_puts(s); }
+
     if (g_uart_ready && g_uart && g_uart->putc) {
         while (*s) {
             if (*s == '\n') g_uart->putc('\r');
@@ -148,10 +213,19 @@ static void klog_hex64(u64 v) {
     static const char hex[] = "0123456789ABCDEF";
     char buf[24];
     int i = 0;
-    buf[i++] = '0'; buf[i++] = 'x';
+    buf[i++] = '0';
+    buf[i++] = 'x';
     for (int k = 60; k >= 0; k -= 4) buf[i++] = hex[(v >> k) & 0xF];
     buf[i] = 0;
-    klog(buf);
+
+    if (D_UART_TEST) { efi_puts(buf); }
+
+    if (g_uart_ready && g_uart && g_uart->putc) {
+        for (int k = 0; k < i; k++) g_uart->putc(buf[k]);
+    } else {
+        for (int k = 0; k < i && g_uart_buf_len < UART_BUF_SIZE - 1; k++)
+            g_uart_buf[g_uart_buf_len++] = buf[k];
+    }
 }
 
 static void klog_dec(u64 v) {
@@ -159,7 +233,20 @@ static void klog_dec(u64 v) {
     int i = 0;
     if (v == 0) { klog("0"); return; }
     while (v > 0) { buf[i++] = '0' + (v % 10); v /= 10; }
-    while (i > 0) { char c[2] = { buf[--i], 0 }; klog(c); }
+
+    char out[24];
+    int j = 0;
+    while (i > 0) out[j++] = buf[--i];
+    out[j] = 0;
+
+    if (D_UART_TEST) { efi_puts(out); }
+
+    if (g_uart_ready && g_uart && g_uart->putc) {
+        for (int k = 0; k < j; k++) g_uart->putc(out[k]);
+    } else {
+        for (int k = 0; k < j && g_uart_buf_len < UART_BUF_SIZE - 1; k++)
+            g_uart_buf[g_uart_buf_len++] = out[k];
+    }
 }
 
 static void klog_status(dstatus_t s) {
@@ -662,7 +749,213 @@ void task_log_fault(const task_fault_info_t *info) {
     klog("[FAULT] task terminated, continuing\n");
 }
 
-static dkernel_api_t g_kernel_api = {
+extern const u8 font8x8[96][8];
+
+static void fg_put_char(u64 x, u64 y, char ch, u32 fg, u32 bg) {
+    if (ch < 32 || ch > 126) ch = '?';
+    const u8 *glyph = font8x8[(u8)ch - 32];
+    for (u64 row = 0; row < 8; row++) {
+        u8 bits = glyph[row];
+        for (u64 col = 0; col < 8; col++) {
+            u32 c = (bits & (1 << col)) ? fg : bg;
+            g_dws->put_pixel(x + col, y + row, c);
+        }
+    }
+}
+
+static void fg_puts(u64 x, u64 y, const char *s, u32 fg, u32 bg) {
+    u64 cx = x;
+    while (*s) {
+        if (*s == '\n') {
+            cx = x;
+            y += 10;
+        } else {
+            fg_put_char(cx, y, *s, fg, bg);
+            cx += 8;
+        }
+        s++;
+    }
+}
+
+static void fg_draw_hex(u64 x, u64 y, u64 value, u32 fg, u32 bg) {
+    static const char hex[] = "0123456789ABCDEF";
+    char buf[20];
+    int i = 0;
+    buf[i++] = '0';
+    buf[i++] = 'x';
+    for (int k = 60; k >= 0; k -= 4) buf[i++] = hex[(value >> k) & 0xF];
+    buf[i] = 0;
+    fg_puts(x, y, buf, fg, bg);
+}
+
+static void fg_draw_dec(u64 x, u64 y, u64 value, u32 fg, u32 bg) {
+    char buf[24];
+    int i = 0;
+    if (value == 0) buf[i++] = '0';
+    else while (value > 0) { buf[i++] = '0' + (value % 10); value /= 10; }
+    buf[i] = 0;
+    for (int k = 0; k < i / 2; k++) {
+        char t = buf[k];
+        buf[k] = buf[i-1-k];
+        buf[i-1-k] = t;
+    }
+    fg_puts(x, y, buf, fg, bg);
+}
+
+static void fg_fill_bg(u32 bg) {
+    u64 w = 800;
+    u64 h = 600;
+    for (u64 yy = 0; yy < h; yy += 4) {
+        for (u64 xx = 0; xx < w; xx += 4) {
+            g_dws->put_pixel(xx, yy, bg);
+            g_dws->put_pixel(xx + 1, yy, bg);
+            g_dws->put_pixel(xx + 2, yy, bg);
+            g_dws->put_pixel(xx + 3, yy, bg);
+        }
+    }
+}
+
+static const char *fg_vector_name(u64 v) {
+    switch (v) {
+        case 0:  return "Divide Error";
+        case 1:  return "Debug";
+        case 2:  return "NMI";
+        case 3:  return "Breakpoint";
+        case 4:  return "Overflow";
+        case 5:  return "Bound Range";
+        case 6:  return "Invalid Opcode";
+        case 7:  return "Device Not Available";
+        case 8:  return "Double Fault";
+        case 10: return "Invalid TSS";
+        case 11: return "Segment Not Present";
+        case 12: return "Stack Fault";
+        case 13: return "General Protection";
+        case 14: return "Page Fault";
+        case 16: return "x87 FPU";
+        case 17: return "Alignment Check";
+        case 18: return "Machine Check";
+        case 19: return "SIMD FP";
+        case 20: return "Virtualization";
+        case 21: return "Control Protection";
+        default: return "Unknown";
+    }
+}
+
+void fault_gui_show(const task_fault_info_t *info) {
+    if (!g_dws || !g_dws->fill || !g_dws->put_pixel) return;
+    if (!info) return;
+
+    u32 bg       = 0x00000000;
+    u32 fg       = 0x00FFFFFF;
+    u32 title_bg = 0x00AA0000;
+    u32 title_fg = 0x00FFFFFF;
+    u32 label_fg = 0x00FFCC00;
+    u32 warn_fg  = 0x00FF4444;
+    u32 ok_fg    = 0x0044FF44;
+
+    g_dws->fill(bg);
+
+    u64 y = 20;
+
+    fg_puts(20, y, "=== KERNEL FAULT ===", title_fg, title_bg);
+    y += 16;
+
+    fg_puts(20, y, "Task:", label_fg, bg);
+    fg_puts(100, y, info->task_name ? info->task_name : "?", fg, bg);
+    fg_puts(400, y, "Index:", label_fg, bg);
+    fg_draw_dec(464, y, info->task_index, fg, bg);
+    fg_puts(600, y, "Tick:", label_fg, bg);
+    fg_draw_dec(656, y, info->tick, fg, bg);
+    y += 12;
+
+    fg_puts(20, y, "Vector:", label_fg, bg);
+    fg_draw_dec(100, y, info->vector, fg, bg);
+    fg_puts(160, y, fg_vector_name(info->vector), warn_fg, bg);
+    fg_puts(600, y, "Error:", label_fg, bg);
+    fg_draw_hex(664, y, info->error_code, fg, bg);
+    y += 12;
+
+    fg_puts(20, y, "RIP:", label_fg, bg);
+    fg_draw_hex(100, y, info->rip, fg, bg);
+    fg_puts(400, y, "CS:", label_fg, bg);
+    fg_draw_hex(440, y, info->cs, fg, bg);
+    fg_puts(600, y, "RSP:", label_fg, bg);
+    fg_draw_hex(648, y, info->rsp, fg, bg);
+    y += 12;
+
+    fg_puts(20, y, "RFLAGS:", label_fg, bg);
+    fg_draw_hex(100, y, info->rflags, fg, bg);
+    if (info->vector == 14) {
+        fg_puts(400, y, "CR2:", label_fg, bg);
+        fg_draw_hex(440, y, info->cr2, warn_fg, bg);
+    }
+    y += 20;
+
+    fg_puts(20, y, "--- General Purpose Registers ---", label_fg, bg);
+    y += 14;
+
+    fg_puts(20,  y, "RAX:", label_fg, bg);
+    fg_draw_hex(76, y, info->rax, fg, bg);
+    fg_puts(240, y, "RBX:", label_fg, bg);
+    fg_draw_hex(296, y, info->rbx, fg, bg);
+    fg_puts(460, y, "RCX:", label_fg, bg);
+    fg_draw_hex(516, y, info->rcx, fg, bg);
+    y += 12;
+
+    fg_puts(20,  y, "RDX:", label_fg, bg);
+    fg_draw_hex(76, y, info->rdx, fg, bg);
+    fg_puts(240, y, "RSI:", label_fg, bg);
+    fg_draw_hex(296, y, info->rsi, fg, bg);
+    fg_puts(460, y, "RDI:", label_fg, bg);
+    fg_draw_hex(516, y, info->rdi, fg, bg);
+    y += 12;
+
+    fg_puts(20,  y, "RBP:", label_fg, bg);
+    fg_draw_hex(76, y, info->rbp, fg, bg);
+    fg_puts(240, y, "R8 :", label_fg, bg);
+    fg_draw_hex(296, y, info->r8, fg, bg);
+    fg_puts(460, y, "R9 :", label_fg, bg);
+    fg_draw_hex(516, y, info->r9, fg, bg);
+    y += 12;
+
+    fg_puts(20,  y, "R10:", label_fg, bg);
+    fg_draw_hex(76, y, info->r10, fg, bg);
+    fg_puts(240, y, "R11:", label_fg, bg);
+    fg_draw_hex(296, y, info->r11, fg, bg);
+    fg_puts(460, y, "R12:", label_fg, bg);
+    fg_draw_hex(516, y, info->r12, fg, bg);
+    y += 12;
+
+    fg_puts(20,  y, "R13:", label_fg, bg);
+    fg_draw_hex(76, y, info->r13, fg, bg);
+    fg_puts(240, y, "R14:", label_fg, bg);
+    fg_draw_hex(296, y, info->r14, fg, bg);
+    fg_puts(460, y, "R15:", label_fg, bg);
+    fg_draw_hex(516, y, info->r15, fg, bg);
+    y += 20;
+
+    fg_puts(20, y, "--- Stack dump (16 qwords) ---", label_fg, bg);
+    y += 14;
+
+    if (info->rsp >= 0x100000 && info->rsp < 0x80000000) {
+        u64 *sp = (u64 *)info->rsp;
+        for (int i = 0; i < 16; i++) {
+            fg_draw_hex(20, y, info->rsp + i * 8, label_fg, bg);
+            fg_puts(180, y, ":", label_fg, bg);
+            fg_draw_hex(200, y, sp[i], fg, bg);
+            y += 10;
+            if (y > (800 - 30)) break;
+        }
+    } else {
+        fg_puts(20, y, "  (RSP out of range)", warn_fg, bg);
+    }
+
+    y = 600 - 20;
+    fg_puts(20, y, "Task will be terminated. Press any key to continue...",
+            ok_fg, bg);
+}
+
+dkernel_api_t g_kernel_api = {
     .version              = DKRNL_API_VERSION,
     ._pad                 = 0,
     .register_driver      = (int (*)(void *))dreg_register_driver,
@@ -691,7 +984,12 @@ static dkernel_api_t g_kernel_api = {
     .timer_source_name           = timer_source_name,
     .timer_get_ioapic_available  = (u32 (*)(void))ioapic_available,
     .timer_get_lapic_id          = lapic_get_id,
+    .fault_show = fault_gui_show,
 };
+
+dkernel_api_t *dkrnl_get_api(void) {
+    return &g_kernel_api;
+}
 
 void kmain(void) {
     volatile u64 *mark = (volatile u64 *)MARK_ADDR;
@@ -865,6 +1163,7 @@ void kmain(void) {
 
     registered = DFindAndGetDriver("dws");
     if (registered) dws = (dws_api_t *)registered->api;
+        g_dws = dws;
 
     uart_api_t *uart = 0;
     registered = DFindAndGetDriver("uart");
@@ -877,12 +1176,20 @@ void kmain(void) {
     }
 
     dkbd_api_t *kbd = 0;
-    registered = DFindAndGetDriver("dkbd");
+    registered = DFindAndGetDriver("dkbd_usb");
     if (registered) kbd = (dkbd_api_t *)registered->api;
+    if (!kbd) {
+        registered = DFindAndGetDriver("dkbd");
+        if (registered) kbd = (dkbd_api_t *)registered->api;
+    }
 
     dmouse_api_t *mouse = 0;
-    registered = DFindAndGetDriver("dmouse");
+    registered = DFindAndGetDriver("dmouse_usb");
     if (registered) mouse = (dmouse_api_t *)registered->api;
+    if (!mouse) {
+        registered = DFindAndGetDriver("dmouse");
+        if (registered) mouse = (dmouse_api_t *)registered->api;
+    }
 
     ddriver_t *umcas_drv = DFindAndGetDriver("umcas");
     if (umcas_drv && umcas_drv->api) {
@@ -1100,7 +1407,7 @@ void kmain(void) {
     *mark = 0xCCCC000F;
 
     // LHGC Test: Check if Lightweight Heap Garbage Collector correctly clear Leak heaps.
-    {
+        {
         D_HEAP_POINTER leak = DCreateHeap("kmain_leak");
         if (leak) {
             u8 payload[128];
@@ -1110,6 +1417,53 @@ void kmain(void) {
             klog("[kmain] leak heap created, write st=");
             klog_status(ws);
             klog("\n");
+
+            u8 readback[128];
+            dstatus_t rs = DReadHeap(leak, 0, readback, sizeof(readback));
+            klog("[kmain] read st=");
+            klog_status(rs);
+            klog("\n");
+
+            if (DSTATUS_IS_OK(rs)) {
+                klog("[kmain] heap data dump (16 bytes per row):\n");
+                for (u32 row = 0; row < 8; row++) {
+                    klog("  ");
+                    for (u32 col = 0; col < 16; col++) {
+                        u8 v = readback[row * 16 + col];
+                        static const char hex[] = "0123456789ABCDEF";
+                        char pair[3];
+                        pair[0] = hex[(v >> 4) & 0xF];
+                        pair[1] = hex[v & 0xF];
+                        pair[2] = 0;
+                        klog(pair);
+                        klog(" ");
+                    }
+                    klog(" | ");
+                    for (u32 col = 0; col < 16; col++) {
+                        u8 v = readback[row * 16 + col];
+                        char ch[2];
+                        ch[0] = (v >= 0x20 && v < 0x7F) ? (char)v : '.';
+                        ch[1] = 0;
+                        klog(ch);
+                    }
+                    klog("\n");
+                }
+
+                int mismatch = 0;
+                for (u32 i = 0; i < sizeof(payload); i++) {
+                    if (readback[i] != payload[i]) {
+                        mismatch++;
+                    }
+                }
+                klog("[kmain] verify: ");
+                if (mismatch == 0) {
+                    klog("OK, all 128 bytes match\n");
+                } else {
+                    klog("MISMATCH, ");
+                    klog_dec(mismatch);
+                    klog(" bytes differ\n");
+                }
+            }
         } else {
             klog("[kmain] leak heap FAILED\n");
         }

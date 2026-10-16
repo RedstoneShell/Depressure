@@ -37,12 +37,22 @@ typedef struct interrupt_frame {
 } interrupt_frame_t;
 
 typedef struct task_fault_info {
+    u64 vector;
+    u64 error_code;
+    u64 rip;
+    u64 cs;
+    u64 rflags;
+    u64 rsp;
+    u64 cr2;
+    u64 rax, rbx, rcx, rdx;
+    u64 rsi, rdi, rbp;
+    u64 r8, r9, r10, r11;
+    u64 r12, r13, r14, r15;
     const char *task_name;
-    u64         vector;
-    u64         error_code;
-    u64         rip;
-    u64         cr2;
+    u64 task_index;
+    u64 tick;
 } task_fault_info_t;
+
 #define DTIMER_SOURCE_PIT    0u
 #define DTIMER_SOURCE_HPET   1u
 #define DTIMER_SOURCE_LAPIC  2u

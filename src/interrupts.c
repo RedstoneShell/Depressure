@@ -229,7 +229,16 @@ int interrupts_init(void) {
     }
     if (!install_gdt(&old_gdtr)) return 0;
 
-    for (u32 i = 0; i < IDT_ENTRIES; i++) {
+        for (u32 i = 0; i < IDT_ENTRIES; i++) {
+        int ours = 0;
+
+        if (i < 32)                    ours = 1;   /* CPU exceptions 0x00..0x1F */
+        else if (i == IRQ_TIMER_PIT)   ours = 1;   /* 0x20 PIT */
+        else if (i == VECTOR_HPET)     ours = 1;   /* 0x30 HPET */
+        else if (i == VECTOR_LAPIC)    ours = 1;   /* 0x40 LAPIC */
+
+        if (!ours) continue;
+
         u8 ist = 0;
         if (i == 8 && g_double_fault_ist != 0) ist = (u8)g_double_fault_ist;
         set_idt_gate(i, interrupt_stub_table[i], ist);
@@ -465,6 +474,41 @@ static const char *exception_names[32] = {
     "Hypervisor Injection", "VMM Communication", "Security", "Reserved"
 };
 
+static void build_fault_info(interrupt_frame_t *frame, task_fault_info_t *out) {
+    out->vector     = frame->vector;
+    out->error_code = frame->error_code;
+    out->rip        = frame->rip;
+    out->cs         = frame->cs;
+    out->rflags     = frame->rflags;
+    out->rsp        = frame->rsp;
+    out->cr2        = 0;
+    out->rax = frame->rax;
+    out->rbx = frame->rbx;
+    out->rcx = frame->rcx;
+    out->rdx = frame->rdx;
+    out->rsi = frame->rsi;
+    out->rdi = frame->rdi;
+    out->rbp = frame->rbp;
+    out->r8  = frame->r8;
+    out->r9  = frame->r9;
+    out->r10 = frame->r10;
+    out->r11 = frame->r11;
+    out->r12 = frame->r12;
+    out->r13 = frame->r13;
+    out->r14 = frame->r14;
+    out->r15 = frame->r15;
+
+    if (frame->vector == 14) {
+        u64 cr2;
+        __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
+        out->cr2 = cr2;
+    }
+
+    out->task_name  = dkrnl_current_task_name();
+    out->task_index = 0;
+    out->tick       = dkrnl_get_tick();
+}
+
 static void log_exception(interrupt_frame_t *frame) {
     u64 vector = frame->vector;
 
@@ -545,8 +589,42 @@ static void log_exception(interrupt_frame_t *frame) {
     panic_puts("[kernel] ================\n");
 }
 
-static void kill_current_and_resched(void) {
-    panic_puts("[kernel] killing task, resuming scheduler\n");
+static void show_fault_gui_and_kill(interrupt_frame_t *frame) {
+    task_fault_info_t info;
+    build_fault_info(frame, &info);
+
+    panic_puts("\n[kernel] === EXCEPTION ===\n");
+    panic_puts("[kernel] name:   ");
+    panic_puts(info.task_name ? info.task_name : "?");
+    panic_puts("\n");
+    panic_puts("[kernel] vector: ");
+    panic_put_hex(info.vector);
+    panic_puts("\n");
+    panic_puts("[kernel] error:  ");
+    panic_put_hex(info.error_code);
+    panic_puts("\n");
+    panic_puts("[kernel] rip:    ");
+    panic_put_hex(info.rip);
+    panic_puts("\n");
+    panic_puts("[kernel] rsp:    ");
+    panic_put_hex(info.rsp);
+    panic_puts("\n");
+    if (info.vector == 14) {
+        panic_puts("[kernel] cr2:    ");
+        panic_put_hex(info.cr2);
+        panic_puts("\n");
+    }
+    panic_puts("[kernel] ================\n");
+
+    extern dkernel_api_t *dkrnl_get_api(void);
+    dkernel_api_t *api = dkrnl_get_api();
+    if (api && api->fault_show) {
+        api->fault_show(&info);
+    }
+
+    for (volatile u64 w = 0; w < 50000000; w++) { }
+
+    panic_puts("[kernel] killing task\n");
     dkrnl_kill_current_task();
     for (;;) {
         __asm__ volatile ("sti; hlt");
@@ -580,8 +658,7 @@ u64 interrupt_dispatch(interrupt_frame_t *frame) {
     }
 
     if (vector < 32) {
-        log_exception(frame);
-        kill_current_and_resched();
+        show_fault_gui_and_kill(frame);
     }
 
     return (u64)frame;

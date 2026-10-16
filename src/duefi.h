@@ -33,5 +33,9 @@ u64 uefi_get_total_ram(void *BootServices);
 u64 uefi_create_event(EFI_BOOT_SERVICES *bs, EFI_EVENT *out_event);
 u64 uefi_locate_handle_blockio(void *BootServices, void *buffer, u64 *size);
 u64 uefi_handle_protocol_blockio(void *BootServices, void *handle, void **iface);
+u64 uefi_get_simple_pointer(void **out_sp);
+u64 uefi_simple_pointer_get_state(void *sp, void *out_state);
+u64 uefi_simple_pointer_reset(void *sp, u8 extended);
+u64 uefi_con_out_string(void *con_out, const u16 *string);
 
 #endif /* DUEFI_H */

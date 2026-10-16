@@ -90,6 +90,16 @@ typedef struct acpi_system_info {
     u8  pm2_control_value;
     u8  _reserved_fadt_runtime[3];
     u32 fadt_pm_timer_value;
+    u64 bgrt_address;
+    u64 bgrt_image_address;
+    u32 bgrt_image_offset_x;
+    u32 bgrt_image_offset_y;
+    u32 bgrt_image_width;
+    u32 bgrt_image_height;
+    u8  bgrt_status;
+    u8  bgrt_image_type;
+    u8  bgrt_available;
+    u8  _reserved_bgrt;
 } acpi_system_info_t;
 
 typedef struct acpi_api {

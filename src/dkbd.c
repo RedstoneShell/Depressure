@@ -13,10 +13,18 @@ typedef struct dkbd_api {
     int  (*has_key)(void);
     char (*get_key)(void);
     u8   (*get_scancode)(void);
+    int  (*has_arrow)(void);
+    int  (*get_arrow)(void);
 } dkbd_api_t;
 
 #define PS2_DATA    0x60
 #define PS2_STATUS  0x64
+
+#define ARROW_NONE   -1
+#define ARROW_UP      0
+#define ARROW_DOWN    1
+#define ARROW_LEFT    2
+#define ARROW_RIGHT   3
 
 static const char scancode_to_ascii[128] = {
     0,  27, '1','2','3','4','5','6','7','8','9','0','-','=', '\b',
@@ -48,6 +56,19 @@ static inline u8 inb(u16 port) {
     return ret;
 }
 
+static int g_pending_arrow = ARROW_NONE;
+
+static int kbd_has_arrow(void) {
+    kbd_has_key();
+    return g_pending_arrow != ARROW_NONE;
+}
+
+static int kbd_get_arrow(void) {
+    int a = g_pending_arrow;
+    g_pending_arrow = ARROW_NONE;
+    return a;
+}
+
 static void kbd_process_scancode(u8 sc) {
     g_last_scancode = sc;
 
@@ -57,6 +78,7 @@ static void kbd_process_scancode(u8 sc) {
     }
 
     if (sc & 0x80) {
+        /* break code */
         u8 make = sc & 0x7F;
 
         if (make == 0x2A || make == 0x36) g_shift = 0;
@@ -69,16 +91,18 @@ static void kbd_process_scancode(u8 sc) {
 
     u8 make = sc;
 
-    if (make == 0x2A || make == 0x36) {
-        g_shift = 1;
-        g_extended = 0;
-        return;
-    }
+    /* shift/ctrl/alt */
+    if (make == 0x2A || make == 0x36) { g_shift = 1; g_extended = 0; return; }
     if (make == 0x1D) { g_ctrl = 1; g_extended = 0; return; }
     if (make == 0x38) { g_alt = 1; g_extended = 0; return; }
 
+    /* extended: arrows */
     if (g_extended) {
         g_extended = 0;
+        if (make == 0x48) { g_pending_arrow = ARROW_UP;    return; }
+        if (make == 0x50) { g_pending_arrow = ARROW_DOWN;  return; }
+        if (make == 0x4B) { g_pending_arrow = ARROW_LEFT;  return; }
+        if (make == 0x4D) { g_pending_arrow = ARROW_RIGHT; return; }
         return;
     }
 
@@ -86,13 +110,10 @@ static void kbd_process_scancode(u8 sc) {
     if (make < 128) {
         c = g_shift ? scancode_to_ascii_shift[make] : scancode_to_ascii[make];
     }
-
-    if (c) {
-        g_last_char = c;
-    }
+    if (c) g_last_char = c;
 }
 
-static int kbd_has_key(void) {
+int kbd_has_key(void) {
     u8 status = inb(PS2_STATUS);
 
     if ((status & 0x01) == 0) return 0;
@@ -141,6 +162,8 @@ void dkbd_main(dkernel_api_t *api, void *fb_info) {
     g_kbd_api.has_key       = kbd_has_key;
     g_kbd_api.get_key       = kbd_get_key;
     g_kbd_api.get_scancode  = kbd_get_scancode;
+    g_kbd_api.has_arrow = kbd_has_arrow;
+    g_kbd_api.get_arrow = kbd_get_arrow;
 
     if (api && api->register_driver) {
         kbd_driver.api = (u64)&g_kbd_api;
